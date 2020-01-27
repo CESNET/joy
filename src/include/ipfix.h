@@ -277,6 +277,8 @@ typedef struct ipfix_basic_list_hdr_ {
 
 #else
 
+#define BASIC_LIST_HEADER_SIZE 9
+
 typedef struct __attribute__((__packed__)) ipfix_basic_list_hdr_ {
     uint8_t semantic;
     uint16_t field_id;
@@ -336,7 +338,8 @@ typedef struct ipfix_collector_ {
 typedef enum ipfix_template_type_ {
   IPFIX_RESERVED_TEMPLATE =                          0,
   IPFIX_SIMPLE_TEMPLATE =                            1,
-  IPFIX_IDP_TEMPLATE =                               2
+  IPFIX_IDP_TEMPLATE =                               2,
+  IPFIX_EXTENDED_TEMPLATE =                          3
 } ipfix_template_type_e;
 
 
@@ -374,6 +377,17 @@ typedef struct ipfix_variable_field_ {
     unsigned char *info;
 } ipfix_variable_field_t;
 
+
+#define MIN_SIZE_BASIC_LIST_FIELD 3 + BASIC_LIST_HEADER_SIZE
+
+typedef struct ipfix_basic_list_field_ {
+    uint8_t flag;
+    uint16_t length;
+    ipfix_basic_list_hdr_t header;
+    unsigned char *content;
+} ipfix_basic_list_field_t;
+
+
 #define SIZE_IPFIX_DATA_SIMPLE 29
 
 typedef struct ipfix_exporter_data_simple_ {
@@ -405,6 +419,22 @@ typedef struct ipfix_exporter_data_idp_ {
 } ipfix_exporter_data_idp_t;
 
 
+#define SIZE_IPFIX_DATA_EXTENDED 36 + SIZE_IPFIX_DATA_SIMPLE
+
+typedef struct ipfix_exporter_data_extended_ {
+    uint32_t source_ipv4_address;
+    uint32_t destination_ipv4_address;
+    uint16_t source_transport_port;
+    uint16_t destination_transport_port;
+    uint8_t protocol_identifier;
+    uint64_t flow_start_microseconds;
+    uint64_t flow_end_microseconds;
+    ipfix_basic_list_field_t tls_record_lengths;
+    ipfix_basic_list_field_t tls_record_times;
+    ipfix_basic_list_field_t tls_record_types;
+} ipfix_exporter_data_extended_t;
+
+
 /*
  * @brief Structure representing an IPFIX Exporter Data record.
  */
@@ -412,6 +442,7 @@ typedef struct ipfix_exporter_data_ {
   union {
     ipfix_exporter_data_simple_t simple;
     ipfix_exporter_data_idp_t idp_record;
+    ipfix_exporter_data_extended_t extended_record;
   } record;
   ipfix_template_type_e type;
   uint16_t length; /**< total length the data record */

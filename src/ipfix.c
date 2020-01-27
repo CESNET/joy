@@ -2103,6 +2103,14 @@ static inline void ipfix_delete_exp_data_record(ipfix_exporter_data_t *data_reco
             free(data_record->record.idp_record.idp_field.info);
         }
         break;
+    case IPFIX_EXTENDED_TEMPLATE:
+        variable_len = data_record->record.extended_record.tls_record_lengths.length != 0;
+        if (variable_len != 0) {
+            free(data_record->record.extended_record.tls_record_lengths.content);
+            free(data_record->record.extended_record.tls_record_times.content);
+            free(data_record->record.extended_record.tls_record_types.content);
+        }
+        break;
     case IPFIX_RESERVED_TEMPLATE:
     case IPFIX_SIMPLE_TEMPLATE:
     default:
@@ -3065,12 +3073,15 @@ int ipfix_exporter_init(const char *host_name) {
     
     /* Set the template type to use */
     if (glb_config->ipfix_export_template) {
-        if ((strcmp_s(glb_config->ipfix_export_template, TEMPLATE_NAME_MAX_SIZE, "simple", &cmp_ind) == EOK) || cmp_ind == 0) {
+        if ((strcmp_s(glb_config->ipfix_export_template, TEMPLATE_NAME_MAX_SIZE, "simple", &cmp_ind) == EOK) && cmp_ind == 0) {
             export_template_type = IPFIX_SIMPLE_TEMPLATE;
             loginfo("Template Type: %s", "simple");
-        } else if ((strcmp_s(glb_config->ipfix_export_template, TEMPLATE_NAME_MAX_SIZE, "idp", &cmp_ind) == EOK) || cmp_ind == 0) {
+        } else if ((strcmp_s(glb_config->ipfix_export_template, TEMPLATE_NAME_MAX_SIZE, "idp", &cmp_ind) == EOK) && cmp_ind == 0) {
             export_template_type = IPFIX_IDP_TEMPLATE;
             loginfo("Template Type: %s", "idp");
+        } else if ((strcmp_s(glb_config->ipfix_export_template, TEMPLATE_NAME_MAX_SIZE, "extended", &cmp_ind) == EOK) && cmp_ind == 0) {
+            export_template_type = IPFIX_EXTENDED_TEMPLATE;
+            loginfo("Template Type: %s", "extended");
         } else {
             loginfo("warning: template type invalid, defaulting to \"simple\"");
             export_template_type = IPFIX_SIMPLE_TEMPLATE;
@@ -3291,6 +3302,209 @@ static ipfix_exporter_data_t *ipfix_exp_create_idp_data_record
     return data_record;
 }
 
+/*
+ * Helper function for interleaving TLS records from flow and its twin
+ *
+ * @param fr_record Joy flow record
+ * @param tls_record_lengths A pointer where the lengths will be stored
+ * @param tls_record_times A pointer where the times will be stored
+ * @param tls_record_types A pointer where the types will be stored
+ *
+ * @return Total number of TLS records in flow and its twin
+ */
+static unsigned int interlave_srlt (const flow_record_t *fr_record,
+        int16_t **tls_record_lengths,
+        uint16_t **tls_record_times,
+        uint8_t **tls_record_types) {
+
+    if(fr_record->tls == NULL || fr_record->twin == NULL || fr_record->twin->tls == NULL) {
+        return 0;
+    }
+    unsigned int op = fr_record->tls->op; // number of records
+	const unsigned short *len = fr_record->tls->lengths;
+	const struct timeval *time = fr_record->tls->times;
+	const tls_message_stat_t *msg_stat = fr_record->tls->msg_stats;
+
+	unsigned int op2 = fr_record->twin->tls->op;
+	const unsigned short *len2 = fr_record->twin->tls->lengths;
+	const struct timeval *time2 = fr_record->twin->tls->times;
+	const tls_message_stat_t *msg_stat2 = fr_record->twin->tls->msg_stats;
+
+	unsigned int i, j, k, imax, jmax, pkt_delay_tmp;
+	struct timeval ts, ts_last, ts_start, tmp;
+	int16_t pkt_len;
+	uint16_t pkt_delay;
+	const char *dir;
+	tls_message_stat_t stat;
+    unsigned int total_tls_records;
+
+	if (op == 0 || op2 == 0) { // there should be records in both directions
+		return 0;
+	}
+
+    total_tls_records = op + op2;
+	*tls_record_lengths = calloc(total_tls_records, sizeof(int16_t));
+	*tls_record_times = calloc(total_tls_records, sizeof(uint16_t));
+    *tls_record_types = calloc(total_tls_records, sizeof(uint8_t));
+
+	if (joy_timer_lt(time, time2)) {
+		ts_start = *time;
+	} else {
+		ts_start = *time2;
+	}
+
+	imax = op > NUM_PKT_LEN_TLS ? NUM_PKT_LEN_TLS : op;
+	jmax = op2 > NUM_PKT_LEN_TLS ? NUM_PKT_LEN_TLS : op2;
+	i = j = k = 0;
+	ts_last = ts_start;
+	while ((i < imax) || (j < jmax)) {
+		if (i >= imax) {  /* record list is exhausted, use twin */
+		    dir = OUT;
+            ts = time2[j];
+            pkt_len = len2[j];
+            stat = msg_stat2[j];
+            j++;
+		} else if (j >= jmax) {  /* twin list is exhausted, use record */
+			dir = IN;
+			ts = time[i];
+			pkt_len = len[i];
+			stat = msg_stat[i];
+			i++;
+		} else { /* neither list is exhausted, use list with lowest time */
+			if (joy_timer_lt(&time[i], &time2[j])) {
+				ts = time[i];
+				pkt_len = len[i];
+				stat = msg_stat[i];
+				dir = IN;
+				if (i < imax) {
+					i++;
+				}
+			} else {
+				ts = time2[j];
+				pkt_len = len2[j];
+				stat = msg_stat2[j];
+				dir = OUT;
+				if (j < jmax) {
+					j++;
+				}
+			}
+		}
+		joy_timer_sub(&ts, &ts_last, &tmp);
+        pkt_delay_tmp = joy_timeval_to_milliseconds(tmp);
+        pkt_delay = (pkt_delay_tmp >= USHRT_MAX) ? USHRT_MAX : (uint16_t) pkt_delay_tmp;
+
+        (*tls_record_lengths)[k] = (strncmp(OUT, dir, 1)) ? pkt_len : -pkt_len; // store IN direction sizes as negative
+        (*tls_record_times)[k] = pkt_delay;
+        (*tls_record_types)[k] = stat.content_type;
+		ts_last = ts;
+		k++;
+	}
+	return total_tls_records;
+}
+
+
+/*
+ * @brief Create an extended data recdord.
+ *
+ * Make an extended data record
+ *
+ * WARNING: The end user of the newly allocated template is
+ * responsible for freeing that memory.
+ *
+ * @param fr_record Joy flow record created during the metric observation
+ *                  phase of the process, i.e. process_packet(). It contains
+ *                  information that will be encoded into the new data record.
+ *
+ * @return The desired data record, otherwise NULL for failure.
+ */
+static ipfix_exporter_data_t *ipfix_exp_create_extended_data_record
+        (const flow_record_t *fr_record) {
+    ipfix_exporter_data_t *data_record = NULL;
+    uint8_t protocol = 0;
+    unsigned int total_tls_records = 0;
+    int16_t *tls_record_lengths = NULL;
+    uint16_t *tls_record_times = NULL;
+    uint8_t *tls_record_types = NULL;
+
+    data_record = ipfix_exp_data_record_malloc();
+
+    if (data_record != NULL) {
+        /*
+         * Assign the data fields
+         */
+        /* IPFIX_SOURCE_IPV4_ADDRESS */
+        data_record->record.simple.source_ipv4_address = fr_record->key.sa.v4_sa.s_addr;
+
+        /* IPFIX_DESTINATION_IPV4_ADDRESS */
+        data_record->record.simple.destination_ipv4_address = fr_record->key.da.v4_da.s_addr;
+
+        /* IPFIX_SOURCE_TRANSPORT_PORT */
+        data_record->record.simple.source_transport_port = fr_record->key.sp;
+
+        /* IPFIX_DESTINATION_TRANSPORT_PORT */
+        data_record->record.simple.destination_transport_port = fr_record->key.dp;
+
+        /* IPFIX_PROTOCOL_IDENTIFIER */
+        protocol = (uint8_t)(fr_record->key.prot & 0xff);
+        data_record->record.simple.protocol_identifier = protocol;
+
+        /*
+         * IPFIX_FLOW_START_MICROSECONDS
+         * Using an unsigned 64 bit integer, pack the seconds into the most-significant 32 bits,
+         * and pack the fractional microseconds into the least-significant 32 bits.
+         */
+        data_record->record.simple.flow_start_microseconds = timeval_pack_uint64_t(&fr_record->start);
+
+        /*
+         * IPFIX_FLOW_END_MICROSECONDS
+         * Using an unsigned 64 bit integer, pack the seconds into the most-significant 32 bits,
+         * and pack the fractional microseconds into the least-significant 32 bits.
+         */
+        data_record->record.simple.flow_end_microseconds = timeval_pack_uint64_t(&fr_record->end);
+
+        /*
+         * Extended record
+         */
+        total_tls_records = interlave_srlt(fr_record, &tls_record_lengths, &tls_record_times, &tls_record_types);
+
+        /* IPFIX_TLS_RECORD_LENGTHS */
+        data_record->record.extended_record.tls_record_lengths.flag = 255;
+        data_record->record.extended_record.tls_record_lengths.length = BASIC_LIST_HEADER_SIZE + total_tls_records * sizeof(int16_t);
+        data_record->record.extended_record.tls_record_lengths.header.field_id = IPFIX_TLS_RECORD_LENGTHS;
+        data_record->record.extended_record.tls_record_lengths.header.element_length = sizeof(int16_t);
+        data_record->record.extended_record.tls_record_lengths.header.enterprise_num = 9; // CISCO
+        data_record->record.extended_record.tls_record_lengths.header.semantic = 3; // ALL OF
+        data_record->record.extended_record.tls_record_lengths.content = (unsigned char *) tls_record_lengths;
+
+        /* IPFIX_TLS_RECORD_TIMES */
+        data_record->record.extended_record.tls_record_times.flag = 255;
+        data_record->record.extended_record.tls_record_times.length = BASIC_LIST_HEADER_SIZE + total_tls_records * sizeof(uint16_t);
+        data_record->record.extended_record.tls_record_times.header.field_id = IPFIX_TLS_RECORD_TIMES;
+        data_record->record.extended_record.tls_record_times.header.element_length = sizeof(uint16_t);
+        data_record->record.extended_record.tls_record_times.header.enterprise_num = 9;
+        data_record->record.extended_record.tls_record_times.header.semantic = 3;
+        data_record->record.extended_record.tls_record_times.content = (unsigned char *) tls_record_times;
+
+        /* IPFIX_TLS_CONTENT_TYPES */
+        data_record->record.extended_record.tls_record_types.flag = 255;
+        data_record->record.extended_record.tls_record_types.length = BASIC_LIST_HEADER_SIZE + total_tls_records * sizeof(uint8_t);
+        data_record->record.extended_record.tls_record_types.header.field_id = IPFIX_TLS_CONTENT_TYPES;
+        data_record->record.extended_record.tls_record_types.header.element_length = sizeof(uint8_t);
+        data_record->record.extended_record.tls_record_types.header.enterprise_num = 9;
+        data_record->record.extended_record.tls_record_types.header.semantic = 3;
+        data_record->record.extended_record.tls_record_types.content = tls_record_types;
+
+
+        data_record->length = SIZE_IPFIX_DATA_EXTENDED +
+                total_tls_records * (sizeof(int16_t) + sizeof(uint16_t) + sizeof(uint8_t));
+        data_record->type = IPFIX_EXTENDED_TEMPLATE;
+
+    } else {
+        loginfo("error: unable to malloc data record");
+    }
+
+    return data_record;
+}
 
 /*
  * @brief Create a data record, given a valid type.
@@ -3324,6 +3538,10 @@ static ipfix_exporter_data_t *ipfix_exp_create_data_record
         
     case IPFIX_IDP_TEMPLATE:
         data_record = ipfix_exp_create_idp_data_record(fr_record);
+        break;
+
+    case IPFIX_EXTENDED_TEMPLATE:
+        data_record = ipfix_exp_create_extended_data_record(fr_record);
         break;
 
     case IPFIX_RESERVED_TEMPLATE:
@@ -3466,6 +3684,67 @@ static ipfix_exporter_template_t *ipfix_exp_create_idp_template(void) {
 
 
 /*
+ * @brief Create an extended template.
+ *
+ * Make a extended template with TLS record lenghts, times and types
+ *
+ * WARNING: The end user of the newly allocated template is
+ * responsible for freeing that memory.
+ *
+ * @return The desired template, otherwise NULL for failure.
+ */
+static ipfix_exporter_template_t *ipfix_exp_create_extended_template(void) {
+    ipfix_exporter_template_t *template = NULL;
+    uint16_t num_fields = 10;
+
+    template = ipfix_exp_template_malloc(num_fields);
+
+    if (template != NULL) {
+        /*
+         * Add the fields
+         */
+        ipfix_exp_template_add_field(template,
+                                     ipfix_exp_template_field_macro(IPFIX_SOURCE_IPV4_ADDRESS, 4));
+
+        ipfix_exp_template_add_field(template,
+                                     ipfix_exp_template_field_macro(IPFIX_DESTINATION_IPV4_ADDRESS, 4));
+
+        ipfix_exp_template_add_field(template,
+                                     ipfix_exp_template_field_macro(IPFIX_SOURCE_TRANSPORT_PORT, 2));
+
+        ipfix_exp_template_add_field(template,
+                                     ipfix_exp_template_field_macro(IPFIX_DESTINATION_TRANSPORT_PORT, 2));
+
+        ipfix_exp_template_add_field(template,
+                                     ipfix_exp_template_field_macro(IPFIX_PROTOCOL_IDENTIFIER, 1));
+
+        ipfix_exp_template_add_field(template,
+                                     ipfix_exp_template_field_macro(IPFIX_FLOW_START_MICROSECONDS, 8));
+
+        ipfix_exp_template_add_field(template,
+                                     ipfix_exp_template_field_macro(IPFIX_FLOW_END_MICROSECONDS, 8));
+
+        ipfix_exp_template_add_field(template,
+                                         ipfix_exp_template_field_macro(IPFIX_BASIC_LIST, 65535));
+
+        ipfix_exp_template_add_field(template,
+                                         ipfix_exp_template_field_macro(IPFIX_BASIC_LIST, 65535));
+
+        ipfix_exp_template_add_field(template,
+                                         ipfix_exp_template_field_macro(IPFIX_BASIC_LIST, 65535));
+
+        /* Set the type of template for identification */
+        template->type = IPFIX_EXTENDED_TEMPLATE;
+
+    } else {
+        loginfo("error: template is null");
+    }
+    
+    return template;
+}
+
+
+/*
  * @brief Create a template, given a valid type.
  *
  * Create a new template on the heap according to the
@@ -3492,7 +3771,11 @@ static ipfix_exporter_template_t *ipfix_exp_create_template
     case IPFIX_IDP_TEMPLATE:
         template = ipfix_exp_create_idp_template();
         break;
-        
+
+    case IPFIX_EXTENDED_TEMPLATE:
+        template = ipfix_exp_create_extended_template();
+        break;
+
     case IPFIX_RESERVED_TEMPLATE:
     default:
         loginfo("api-error: template type is not supported");
@@ -3771,6 +4054,165 @@ static int ipfix_exp_encode_data_record_idp(ipfix_exporter_data_t *data_record,
     return 0;
 }
 
+/*
+ * @brief Helper function for encoding Basic List element into data record
+ *
+ * @param ptr Pointer to target buffer
+ * @param ipfix_basic_list_field_t Basic List field that should be encoded
+ *
+ * @return 0 for success, 1 for failure
+ */
+static int encode_basic_list(unsigned char *ptr, ipfix_basic_list_field_t * basic_list_field) {
+    uint16_t bigend_variable_length = 0;
+    uint16_t bigend_field_id = 0;
+    uint16_t bigend_element_length = 0;
+    uint32_t bigned_enterprise_num = 0;
+    uint16_t content_length = basic_list_field->length - BASIC_LIST_HEADER_SIZE;
+    uint16_t element_length = basic_list_field->header.element_length;
+
+    /* Encode the variable length flag */
+    memcpy_s(ptr, sizeof(uint8_t), &basic_list_field->flag, sizeof(uint8_t));
+    ptr += sizeof(uint8_t);
+
+    /* Encode the actual length */
+    bigend_variable_length = htons(basic_list_field->length);
+    memcpy_s(ptr, sizeof(uint16_t), &bigend_variable_length, sizeof(uint16_t));
+    ptr += sizeof(uint16_t);
+
+    /* Encode the semantics */
+    memcpy_s(ptr, sizeof(uint8_t), &basic_list_field->header.semantic, sizeof(uint8_t));
+    ptr += sizeof(uint8_t);
+
+    /* Encode the field id */
+    bigend_field_id = htons(basic_list_field->header.field_id);
+    memcpy_s(ptr, sizeof(uint16_t), &bigend_field_id, sizeof(uint16_t));
+    ptr += sizeof(uint16_t);
+
+    /* Encode the element length */
+    bigend_element_length = htons(element_length);
+    memcpy_s(ptr, sizeof(uint16_t), &bigend_element_length, sizeof(uint16_t));
+    ptr += sizeof(uint16_t);
+
+    /* Encode the enteprise number */
+    bigned_enterprise_num = htonl(basic_list_field->header.enterprise_num);
+    memcpy_s(ptr, sizeof(uint32_t), &bigned_enterprise_num, sizeof(uint32_t));
+    ptr += sizeof(uint32_t);
+
+    /* Encode list content */
+    if (content_length == 0) {
+        return 0;
+    }
+
+    /* if the element length is 1, just copy the buffer */
+    if (element_length == 1) {
+        memcpy_s(ptr, content_length, basic_list_field->content, content_length);
+    } else if (element_length == 2){
+        /* we have to convert elements to big endian */
+        int data_length = content_length;
+        unsigned char *data = basic_list_field->content;
+        uint16_t element;
+        while (data_length > 0) {
+            element = htons(*((const uint16_t *)data));
+            memcpy_s(ptr, sizeof(uint16_t), &element, sizeof(uint16_t));
+            data += element_length;
+            ptr += element_length;
+            data_length -= element_length;
+        }
+    } else {
+        loginfo("basic list encoding error: unsupported element length");
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * @brief Encode an extended data record into an IPFIX message.
+ *
+ *
+ * @param data_record Single Ipfix data record.
+ * @param message_buf Buffer for message that the template \p set will be encoded and written into.
+ * @param msg_length Total length of the \p message.
+ *
+ * @return 0 for success, 1 for failure
+ */
+static int ipfix_exp_encode_data_record_extended(ipfix_exporter_data_t *data_record,
+                                            unsigned char *message_buf) {
+
+    unsigned char *ptr = NULL;
+    uint16_t bigend_src_port = 0;
+    uint16_t bigend_dest_port = 0;
+    uint64_t bigend_end_time = 0;
+    uint64_t bigend_start_time = 0;
+
+    if (data_record == NULL) {
+        loginfo("api-error: data_record is null");
+        return 1;
+    }
+
+    if (data_record->type != IPFIX_EXTENDED_TEMPLATE) {
+        loginfo("api-error: wrong data record type");
+        return 1;
+    }
+
+    /* Get starting position in target message buffer */
+    ptr = message_buf;
+
+    /* IPFIX_SOURCE_IPV4_ADDRESS */
+    memcpy_s(ptr,  sizeof(uint32_t), &data_record->record.extended_record.source_ipv4_address, sizeof(uint32_t));
+    ptr += sizeof(uint32_t);
+
+    /* IPFIX_DESTINATION_IPV4_ADDRESS */
+    memcpy_s(ptr,  sizeof(uint32_t), &data_record->record.extended_record.destination_ipv4_address, sizeof(uint32_t));
+    ptr += sizeof(uint32_t);
+
+    /* IPFIX_SOURCE_TRANSPORT_PORT */
+    bigend_src_port = htons(data_record->record.extended_record.source_transport_port);
+    memcpy_s(ptr,  sizeof(uint16_t), &bigend_src_port, sizeof(uint16_t));
+    ptr += sizeof(uint16_t);
+
+    /* IPFIX_DESTINATION_TRANSPORT_PORT */
+    bigend_dest_port = htons(data_record->record.extended_record.destination_transport_port);
+    memcpy_s(ptr,  sizeof(uint16_t), &bigend_dest_port, sizeof(uint16_t));
+    ptr += sizeof(uint16_t);
+
+    /* IPFIX_PROTOCOL_IDENTIFIER */
+    memcpy_s(ptr,  sizeof(uint8_t), &data_record->record.extended_record.protocol_identifier, sizeof(uint8_t));
+    ptr += sizeof(uint8_t);
+
+    /* IPFIX_FLOW_START_MICROSECONDS */
+    bigend_start_time = hton64(data_record->record.extended_record.flow_start_microseconds);
+    memcpy_s(ptr, sizeof(uint64_t), &bigend_start_time, sizeof(uint64_t));
+    ptr += sizeof(uint64_t);
+
+    /* IPFIX_FLOW_END_MICROSECONDS */
+    bigend_end_time = hton64(data_record->record.extended_record.flow_end_microseconds);
+    memcpy_s(ptr, sizeof(uint64_t), &bigend_end_time, sizeof(uint64_t));
+    ptr += sizeof(uint64_t);
+
+    /*
+     * Encode extended record
+     */
+
+    /* IPFIX_TLS_RECORD_LENGTHS */
+    if (encode_basic_list(ptr, &data_record->record.extended_record.tls_record_lengths)) {
+        return 1;
+    }
+    ptr += data_record->record.extended_record.tls_record_lengths.length + 3;
+
+    /* IPFIX_TLS_RECORD_TIMES */
+    if (encode_basic_list(ptr, &data_record->record.extended_record.tls_record_times)) {
+        return 1;
+    }
+    ptr += data_record->record.extended_record.tls_record_times.length + 3;
+
+    /* IPFIX_TLS_CONTENT_TYPES */
+    if (encode_basic_list(ptr, &data_record->record.extended_record.tls_record_types)) {
+        return 1;
+    }
+    ptr += data_record->record.extended_record.tls_record_types.length + 3;
+
+    return 0;
+}
 
 
 /*
@@ -3843,7 +4285,13 @@ static int ipfix_exp_encode_data_set(ipfix_exporter_data_set_t *set,
             
         case IPFIX_IDP_TEMPLATE:
             if (ipfix_exp_encode_data_record_idp(this_data_record, data_ptr)) {
-                loginfo("error: could not encode the simple data record into message");
+                loginfo("error: could not encode the idp data record into message");
+                return 1;
+            }
+            break;
+        case IPFIX_EXTENDED_TEMPLATE:
+            if (ipfix_exp_encode_data_record_extended(this_data_record, data_ptr)) {
+                loginfo("error: could not encode the extended data record into message");
                 return 1;
             }
             break;
@@ -4106,6 +4554,11 @@ static int ipfix_export_message_attach_data_set(const flow_record_t *fr_record,
             data_record = ipfix_exp_create_data_record(IPFIX_IDP_TEMPLATE,
                                                        fr_record);
             break;
+        case IPFIX_EXTENDED_TEMPLATE:
+            template = ipfix_xts_search(IPFIX_EXTENDED_TEMPLATE, NULL);
+            data_record = ipfix_exp_create_data_record(IPFIX_EXTENDED_TEMPLATE,
+                                                       fr_record);
+            break;
 
         case IPFIX_RESERVED_TEMPLATE:
         default:
@@ -4234,6 +4687,15 @@ static int ipfix_export_message_attach_template_set(ipfix_message_t *message,
                 }
             }
             break;
+        case IPFIX_EXTENDED_TEMPLATE:
+            if (!ipfix_xts_search(IPFIX_EXTENDED_TEMPLATE, &local_tmp)) {
+                xts_tmp = ipfix_exp_create_template(IPFIX_EXTENDED_TEMPLATE);
+                if (ipfix_xts_copy(&local_tmp, xts_tmp)) {
+                    loginfo("error: copy from export template store failed");
+                    goto end;
+                }
+            }
+            break;
         case IPFIX_RESERVED_TEMPLATE:
         default:
             loginfo("error: template type not supported for exporting");
@@ -4268,6 +4730,8 @@ static int ipfix_export_message_attach_template_set(ipfix_message_t *message,
             db_tmp = ipfix_xts_search(IPFIX_SIMPLE_TEMPLATE, NULL);
         } else if (template_type == IPFIX_IDP_TEMPLATE) {
             db_tmp = ipfix_xts_search(IPFIX_IDP_TEMPLATE, NULL);
+        } else if (template_type == IPFIX_EXTENDED_TEMPLATE) {
+            db_tmp = ipfix_xts_search(IPFIX_EXTENDED_TEMPLATE, NULL);
         } else {
  
             loginfo("error: template type not supported for exporting");
