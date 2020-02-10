@@ -3303,6 +3303,100 @@ static ipfix_exporter_data_t *ipfix_exp_create_idp_data_record
 }
 
 /*
+ * Helper function for interleaving packets from flow and its twin
+ *
+ * @param fr_record Joy flow record
+ * @param packet_lengths A pointer where the lengths will be stored
+ * @param pakcet_times A pointer where the times will be stored
+ * @param packet_flags A pointer where the flags will be stored
+ *
+ * @return Total number of packets in flow and its twin
+ */
+static unsigned interleave_ppi( const flow_record_t *fr_record,
+                          int16_t **packet_lengths,
+                          uint16_t **pakcet_times,
+                          uint8_t **packet_flags,
+                          char **packet_directions) {
+
+    unsigned int i, j, k, imax, jmax, pkt_delay_tmp;
+    struct timeval ts, ts_last, ts_tmp;
+    unsigned int packet_count;
+    const char *dir;
+    uint16_t pkt_delay;
+    uint8_t pkt_flags;
+    int16_t pkt_len;
+
+    if (fr_record->twin == NULL || fr_record->ppi->np == 0 || fr_record->twin->ppi->np == 0) {
+        return 0;
+    }
+
+    imax = fr_record->ppi->np > glb_config->num_pkts ? glb_config->num_pkts : fr_record->ppi->np;
+    jmax = fr_record->twin->ppi->np > glb_config->num_pkts ? glb_config->num_pkts : fr_record->twin->ppi->np;
+    packet_count = imax + jmax;
+    *packet_lengths = calloc(packet_count, sizeof(int16_t));
+    *pakcet_times = calloc(packet_count, sizeof(uint16_t));
+    *packet_flags = calloc(packet_count, sizeof(uint8_t));
+    *packet_directions = calloc(packet_count, sizeof(uint8_t));
+
+    if (joy_timer_lt(&fr_record->start, &fr_record->twin->start)) {
+        ts_last = fr_record->start;
+    } else {
+        ts_last = fr_record->twin->start;
+    }
+
+    i = j = k = 0;
+    while ((i < imax) || (j < jmax)) {
+        if (i >= imax) {
+            /* record list is exhausted, so use twin */
+            dir = OUT;
+            ts = fr_record->twin->ppi->pkt_info[j].time;
+            pkt_len = fr_record->twin->ppi->pkt_info[j].len;
+            pkt_flags = fr_record->twin->ppi->pkt_info[j].flags;
+            j++;
+        } else if (j >= jmax) {
+            /* twin list is exhausted, so use record */
+            dir = IN;
+            ts = fr_record->ppi->pkt_info[i].time;
+            pkt_len = fr_record->ppi->pkt_info[i].len;
+            pkt_flags = fr_record->ppi->pkt_info[i].flags;
+            i++;
+        } else {
+            /* Neither list is exhausted, so use list with lowest time */
+            if (joy_timer_lt(&fr_record->ppi->pkt_info[i].time, &fr_record->twin->ppi->pkt_info[j].time)) {
+                ts = fr_record->ppi->pkt_info[i].time;
+                pkt_len = fr_record->ppi->pkt_info[i].len;
+                pkt_flags = fr_record->ppi->pkt_info[i].flags;
+                dir = IN;
+                if (i < imax) {
+                    i++;
+                }
+            } else {
+                ts = fr_record->twin->ppi->pkt_info[j].time;
+                pkt_len = fr_record->twin->ppi->pkt_info[j].len;
+                pkt_flags = fr_record->twin->ppi->pkt_info[j].flags;
+                dir = OUT;
+                if (j < jmax) {
+                    j++;
+                }
+            }
+        }
+
+        joy_timer_sub(&ts, &ts_last, &ts_tmp);
+        pkt_delay_tmp = joy_timeval_to_milliseconds(ts_tmp);
+        pkt_delay = (pkt_delay_tmp >= USHRT_MAX) ? USHRT_MAX : (uint16_t) pkt_delay_tmp;
+
+        (*packet_lengths)[k] = pkt_len;
+        (*pakcet_times)[k] = pkt_delay;
+        (*packet_flags)[k] = pkt_flags;
+        (*packet_directions)[k] = (strncmp(OUT, dir, 1)) ? 1 : -1;
+
+        ts_last = ts;
+        k++;
+    }
+    return packet_count;
+}
+
+/*
  * Helper function for interleaving TLS records from flow and its twin
  *
  * @param fr_record Joy flow record
@@ -3312,12 +3406,21 @@ static ipfix_exporter_data_t *ipfix_exp_create_idp_data_record
  *
  * @return Total number of TLS records in flow and its twin
  */
-static unsigned int interlave_srlt (const flow_record_t *fr_record,
+static unsigned int interleave_tls (const flow_record_t *fr_record,
         int16_t **tls_record_lengths,
         uint16_t **tls_record_times,
         uint8_t **tls_record_types) {
 
-    if(fr_record->tls == NULL || fr_record->twin == NULL || fr_record->twin->tls == NULL) {
+    unsigned int i, j, k, imax, jmax, pkt_delay_tmp;
+    struct timeval ts, ts_last, ts_tmp;
+    int16_t pkt_len;
+    uint16_t pkt_delay;
+    const char *dir;
+    tls_message_stat_t stat;
+    unsigned int tls_record_count;
+
+    if (fr_record->tls == NULL || fr_record->twin == NULL || fr_record->twin->tls == NULL ||
+        fr_record->tls->op == 0 || fr_record->twin->tls->op == 0) { // there should be records in both directions
         return 0;
     }
     unsigned int op = fr_record->tls->op; // number of records
@@ -3330,33 +3433,20 @@ static unsigned int interlave_srlt (const flow_record_t *fr_record,
 	const struct timeval *time2 = fr_record->twin->tls->times;
 	const tls_message_stat_t *msg_stat2 = fr_record->twin->tls->msg_stats;
 
-	unsigned int i, j, k, imax, jmax, pkt_delay_tmp;
-	struct timeval ts, ts_last, ts_start, tmp;
-	int16_t pkt_len;
-	uint16_t pkt_delay;
-	const char *dir;
-	tls_message_stat_t stat;
-    unsigned int total_tls_records;
-
-	if (op == 0 || op2 == 0) { // there should be records in both directions
-		return 0;
-	}
-
-    total_tls_records = op + op2;
-	*tls_record_lengths = calloc(total_tls_records, sizeof(int16_t));
-	*tls_record_times = calloc(total_tls_records, sizeof(uint16_t));
-    *tls_record_types = calloc(total_tls_records, sizeof(uint8_t));
+    imax = op > NUM_PKT_LEN_TLS ? NUM_PKT_LEN_TLS : op;
+    jmax = op2 > NUM_PKT_LEN_TLS ? NUM_PKT_LEN_TLS : op2;
+    tls_record_count = imax + jmax;
+	*tls_record_lengths = calloc(tls_record_count, sizeof(int16_t));
+	*tls_record_times = calloc(tls_record_count, sizeof(uint16_t));
+    *tls_record_types = calloc(tls_record_count, sizeof(uint8_t));
 
 	if (joy_timer_lt(time, time2)) {
-		ts_start = *time;
+        ts_last = *time;
 	} else {
-		ts_start = *time2;
+        ts_last = *time2;
 	}
 
-	imax = op > NUM_PKT_LEN_TLS ? NUM_PKT_LEN_TLS : op;
-	jmax = op2 > NUM_PKT_LEN_TLS ? NUM_PKT_LEN_TLS : op2;
 	i = j = k = 0;
-	ts_last = ts_start;
 	while ((i < imax) || (j < jmax)) {
 		if (i >= imax) {  /* record list is exhausted, use twin */
 		    dir = OUT;
@@ -3389,8 +3479,8 @@ static unsigned int interlave_srlt (const flow_record_t *fr_record,
 				}
 			}
 		}
-		joy_timer_sub(&ts, &ts_last, &tmp);
-        pkt_delay_tmp = joy_timeval_to_milliseconds(tmp);
+		joy_timer_sub(&ts, &ts_last, &ts_tmp);
+        pkt_delay_tmp = joy_timeval_to_milliseconds(ts_tmp);
         pkt_delay = (pkt_delay_tmp >= USHRT_MAX) ? USHRT_MAX : (uint16_t) pkt_delay_tmp;
 
         (*tls_record_lengths)[k] = (strncmp(OUT, dir, 1)) ? pkt_len : -pkt_len; // store IN direction sizes as negative
@@ -3399,7 +3489,7 @@ static unsigned int interlave_srlt (const flow_record_t *fr_record,
 		ts_last = ts;
 		k++;
 	}
-	return total_tls_records;
+	return tls_record_count;
 }
 
 
@@ -3421,10 +3511,11 @@ static ipfix_exporter_data_t *ipfix_exp_create_extended_data_record
         (const flow_record_t *fr_record) {
     ipfix_exporter_data_t *data_record = NULL;
     uint8_t protocol = 0;
-    unsigned int total_tls_records = 0;
-    int16_t *tls_record_lengths = NULL;
-    uint16_t *tls_record_times = NULL;
-    uint8_t *tls_record_types = NULL;
+    unsigned int tls_record_count = 0, packet_count = 0;
+    int16_t *tls_record_lengths = NULL, *packet_lengths = NULL;
+    uint16_t *tls_record_times = NULL, *packet_times = NULL;
+    uint8_t *tls_record_types = NULL, *packet_flags = NULL;
+    char * packet_directions = NULL;
 
     data_record = ipfix_exp_data_record_malloc();
 
@@ -3465,11 +3556,52 @@ static ipfix_exporter_data_t *ipfix_exp_create_extended_data_record
         /*
          * Extended record
          */
-        total_tls_records = interlave_srlt(fr_record, &tls_record_lengths, &tls_record_times, &tls_record_types);
+        packet_count = interleave_ppi(fr_record, &packet_lengths, &packet_times, &packet_flags, &packet_directions);
+
+        /* IPFIX_PACKET_LENGTHS */
+        data_record->record.extended_record.packet_lengths.flag = 255;
+        data_record->record.extended_record.packet_lengths.length = BASIC_LIST_HEADER_SIZE + packet_count * sizeof(int16_t);
+        data_record->record.extended_record.packet_lengths.header.field_id = IPFIX_PACKET_LENGTHS;
+        data_record->record.extended_record.packet_lengths.header.element_length = sizeof(int16_t);
+        data_record->record.extended_record.packet_lengths.header.enterprise_num = 9; // CISCO
+        data_record->record.extended_record.packet_lengths.header.semantic = 3; // ALL OF
+        data_record->record.extended_record.packet_lengths.content = (unsigned char *) packet_lengths;
+
+        /* IPFIX_PACKET_DIRECTIONS*/
+        data_record->record.extended_record.packet_directions.flag = 255;
+        data_record->record.extended_record.packet_directions.length = BASIC_LIST_HEADER_SIZE + packet_count * sizeof(uint8_t);
+        data_record->record.extended_record.packet_directions.header.field_id = IPFIX_PACKET_DIRECTIONS;
+        data_record->record.extended_record.packet_directions.header.element_length = sizeof(char);
+        data_record->record.extended_record.packet_directions.header.enterprise_num = 9;
+        data_record->record.extended_record.packet_directions.header.semantic = 3;
+        data_record->record.extended_record.packet_directions.content = (unsigned char *) packet_directions;
+
+        /* IPFIX_PACKET_TIMES */
+        data_record->record.extended_record.packet_times.flag = 255;
+        data_record->record.extended_record.packet_times.length = BASIC_LIST_HEADER_SIZE + packet_count * sizeof(uint16_t);
+        data_record->record.extended_record.packet_times.header.field_id = IPFIX_PACKET_TIMES;
+        data_record->record.extended_record.packet_times.header.element_length = sizeof(uint16_t);
+        data_record->record.extended_record.packet_times.header.enterprise_num = 9;
+        data_record->record.extended_record.packet_times.header.semantic = 3;
+        data_record->record.extended_record.packet_times.content = (unsigned char *) packet_times;
+
+        /* IPFIX_PACKET_FLAGS */
+        data_record->record.extended_record.packet_flags.flag = 255;
+        data_record->record.extended_record.packet_flags.length = BASIC_LIST_HEADER_SIZE + packet_count * sizeof(uint8_t);
+        data_record->record.extended_record.packet_flags.header.field_id = IPFIX_PACKET_FLAGS;
+        data_record->record.extended_record.packet_flags.header.element_length = sizeof(uint8_t);
+        data_record->record.extended_record.packet_flags.header.enterprise_num = 9;
+        data_record->record.extended_record.packet_flags.header.semantic = 3;
+        data_record->record.extended_record.packet_flags.content = packet_flags;
+
+        /*
+         * TLS
+         */
+        tls_record_count = interleave_tls(fr_record, &tls_record_lengths, &tls_record_times, &tls_record_types);
 
         /* IPFIX_TLS_RECORD_LENGTHS */
         data_record->record.extended_record.tls_record_lengths.flag = 255;
-        data_record->record.extended_record.tls_record_lengths.length = BASIC_LIST_HEADER_SIZE + total_tls_records * sizeof(int16_t);
+        data_record->record.extended_record.tls_record_lengths.length = BASIC_LIST_HEADER_SIZE + tls_record_count * sizeof(int16_t);
         data_record->record.extended_record.tls_record_lengths.header.field_id = IPFIX_TLS_RECORD_LENGTHS;
         data_record->record.extended_record.tls_record_lengths.header.element_length = sizeof(int16_t);
         data_record->record.extended_record.tls_record_lengths.header.enterprise_num = 9; // CISCO
@@ -3478,7 +3610,7 @@ static ipfix_exporter_data_t *ipfix_exp_create_extended_data_record
 
         /* IPFIX_TLS_RECORD_TIMES */
         data_record->record.extended_record.tls_record_times.flag = 255;
-        data_record->record.extended_record.tls_record_times.length = BASIC_LIST_HEADER_SIZE + total_tls_records * sizeof(uint16_t);
+        data_record->record.extended_record.tls_record_times.length = BASIC_LIST_HEADER_SIZE + tls_record_count * sizeof(uint16_t);
         data_record->record.extended_record.tls_record_times.header.field_id = IPFIX_TLS_RECORD_TIMES;
         data_record->record.extended_record.tls_record_times.header.element_length = sizeof(uint16_t);
         data_record->record.extended_record.tls_record_times.header.enterprise_num = 9;
@@ -3487,7 +3619,7 @@ static ipfix_exporter_data_t *ipfix_exp_create_extended_data_record
 
         /* IPFIX_TLS_CONTENT_TYPES */
         data_record->record.extended_record.tls_record_types.flag = 255;
-        data_record->record.extended_record.tls_record_types.length = BASIC_LIST_HEADER_SIZE + total_tls_records * sizeof(uint8_t);
+        data_record->record.extended_record.tls_record_types.length = BASIC_LIST_HEADER_SIZE + tls_record_count * sizeof(uint8_t);
         data_record->record.extended_record.tls_record_types.header.field_id = IPFIX_TLS_CONTENT_TYPES;
         data_record->record.extended_record.tls_record_types.header.element_length = sizeof(uint8_t);
         data_record->record.extended_record.tls_record_types.header.enterprise_num = 9;
@@ -3496,7 +3628,8 @@ static ipfix_exporter_data_t *ipfix_exp_create_extended_data_record
 
 
         data_record->length = SIZE_IPFIX_DATA_EXTENDED +
-                total_tls_records * (sizeof(int16_t) + sizeof(uint16_t) + sizeof(uint8_t));
+                tls_record_count * (sizeof(int16_t) + sizeof(uint16_t) + sizeof(uint8_t)) +
+                packet_count * (sizeof(int16_t) + sizeof(uint16_t) + sizeof(uint8_t) + sizeof(char));
         data_record->type = IPFIX_EXTENDED_TEMPLATE;
 
     } else {
@@ -3695,7 +3828,7 @@ static ipfix_exporter_template_t *ipfix_exp_create_idp_template(void) {
  */
 static ipfix_exporter_template_t *ipfix_exp_create_extended_template(void) {
     ipfix_exporter_template_t *template = NULL;
-    uint16_t num_fields = 10;
+    uint16_t num_fields = 14;
 
     template = ipfix_exp_template_malloc(num_fields);
 
@@ -3723,6 +3856,18 @@ static ipfix_exporter_template_t *ipfix_exp_create_extended_template(void) {
 
         ipfix_exp_template_add_field(template,
                                      ipfix_exp_template_field_macro(IPFIX_FLOW_END_MICROSECONDS, 8));
+
+        ipfix_exp_template_add_field(template,
+                                         ipfix_exp_template_field_macro(IPFIX_BASIC_LIST, 65535));
+
+        ipfix_exp_template_add_field(template,
+                                         ipfix_exp_template_field_macro(IPFIX_BASIC_LIST, 65535));
+
+        ipfix_exp_template_add_field(template,
+                                         ipfix_exp_template_field_macro(IPFIX_BASIC_LIST, 65535));
+
+         ipfix_exp_template_add_field(template,
+                                         ipfix_exp_template_field_macro(IPFIX_BASIC_LIST, 65535));
 
         ipfix_exp_template_add_field(template,
                                          ipfix_exp_template_field_macro(IPFIX_BASIC_LIST, 65535));
@@ -4192,6 +4337,30 @@ static int ipfix_exp_encode_data_record_extended(ipfix_exporter_data_t *data_rec
     /*
      * Encode extended record
      */
+
+    /* IPFIX_PACKET_LENGTHS */
+    if (encode_basic_list(ptr, &data_record->record.extended_record.packet_lengths)) {
+        return 1;
+    }
+    ptr += data_record->record.extended_record.packet_lengths.length + 3;
+
+    /* IPFIX_PACKET_DIRECTIONS */
+    if (encode_basic_list(ptr, &data_record->record.extended_record.packet_directions)) {
+        return 1;
+    }
+    ptr += data_record->record.extended_record.packet_directions.length + 3;
+
+    /* IPFIX_PACKET_TIMES */
+    if (encode_basic_list(ptr, &data_record->record.extended_record.packet_times)) {
+        return 1;
+    }
+    ptr += data_record->record.extended_record.packet_times.length + 3;
+
+    /* IPFIX_PACKET_FLAGS */
+    if (encode_basic_list(ptr, &data_record->record.extended_record.packet_flags)) {
+        return 1;
+    }
+    ptr += data_record->record.extended_record.packet_flags.length + 3;
 
     /* IPFIX_TLS_RECORD_LENGTHS */
     if (encode_basic_list(ptr, &data_record->record.extended_record.tls_record_lengths)) {

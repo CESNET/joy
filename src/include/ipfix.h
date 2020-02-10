@@ -419,7 +419,8 @@ typedef struct ipfix_exporter_data_idp_ {
 } ipfix_exporter_data_idp_t;
 
 
-#define SIZE_IPFIX_DATA_EXTENDED 36 + SIZE_IPFIX_DATA_SIMPLE
+// 12 * 7 for six basic lists
+#define SIZE_IPFIX_DATA_EXTENDED 84 + SIZE_IPFIX_DATA_SIMPLE
 
 typedef struct ipfix_exporter_data_extended_ {
     uint32_t source_ipv4_address;
@@ -429,6 +430,10 @@ typedef struct ipfix_exporter_data_extended_ {
     uint8_t protocol_identifier;
     uint64_t flow_start_microseconds;
     uint64_t flow_end_microseconds;
+    ipfix_basic_list_field_t packet_lengths;
+    ipfix_basic_list_field_t packet_directions;
+    ipfix_basic_list_field_t packet_times;
+    ipfix_basic_list_field_t packet_flags;
     ipfix_basic_list_field_t tls_record_lengths;
     ipfix_basic_list_field_t tls_record_times;
     ipfix_basic_list_field_t tls_record_types;
@@ -541,7 +546,7 @@ typedef struct ipfix_exporter_ {
 #endif
 
 #if CPU_IS_BIG_ENDIAN
-# define bytes_to_u32(bytes) (bytes[0] << 24) + (bytes[1] << 16) + (bytes[2] << 8) + bytes[3] 
+# define bytes_to_u32(bytes) (bytes[0] << 24) + (bytes[1] << 16) + (bytes[2] << 8) + bytes[3]
 #else
 # define bytes_to_u32(bytes) bytes[0] + (bytes[1] << 8) + (bytes[2] << 16) + (bytes[3] << 24)
 #endif
@@ -647,7 +652,11 @@ enum ipfix_entities {
   IPFIX_TLS_CONTENT_TYPES =                         44958,
   IPFIX_TLS_HANDSHAKE_TYPES =                       44959,
   IPFIX_TLS_EXTENSION_LENGTHS =                     44960,
-  IPFIX_TLS_EXTENSION_TYPES =                       44961
+  IPFIX_TLS_EXTENSION_TYPES =                       44961,
+  IPFIX_PACKET_LENGTHS =                            44962,
+  IPFIX_PACKET_TIMES =                              44963,
+  IPFIX_PACKET_FLAGS =                              44964,
+  IPFIX_PACKET_DIRECTIONS =                         44965
 };
 
 
