@@ -87,6 +87,19 @@ to allow network researchers to quickly train and deploy their own classifiers
 on a subset of the data features that Joy produces. For more information on
 training your own classifier, see saltUI/README or reach out to joy-users@cisco.com.
 
+#### Cesnet 
+Support for ndp drivers:
+
+```
+cd ndpCInterface
+autoconf && ./configure --prefix=/usr  --libdir=/usr/lib64
+make install
+cd ..
+```
+
+Run configure of jou with --enable-ndp
+
+
 #### Credits
 
 This package was written by David McGrew, Blake Anderson, Philip Perricone

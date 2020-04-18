@@ -76,6 +76,10 @@
 #include <unistd.h>
 #include <pthread.h>
 
+#ifdef USE_NDP
+#include <ndpreader.h>
+#endif
+
 #include "safe_lib.h"
 #include "pkt_proc.h" /* packet processing               */
 #include "p2f.h"      /* joy data structures       */
@@ -134,6 +138,10 @@ typedef enum joy_operating_mode_ {
  */
 static joy_operating_mode_e joy_mode = MODE_NONE;
 static pcap_t *handle = NULL;
+
+#ifdef USE_NDP
+struct NdpReaderContext handle_ndp;
+#endif
 static const char *filter_exp = "ip or ip6 or vlan";
 static char full_path_output[MAX_FILENAME_LEN];
 
@@ -456,6 +464,12 @@ __attribute__((__noreturn__)) static void sig_close (int signal_arg) {
     if (handle) {
       pcap_breakloop(handle);
     }
+
+    
+#ifdef USE_NDP
+	ndp_reader_close(&handle_ndp);
+	ndp_reader_free(&handle_ndp);
+#endif
 
     /* obtain the locks from the child threads */
     if (glb_config->num_threads > 1) {
@@ -854,6 +868,9 @@ static int find_interface (char **capture_if, char **capture_mac) {
     /*
      * find capture interface as needed
      */
+	*capture_if = glb_config->intface;
+	return 0;
+	 
     if (strncmp(glb_config->intface, "auto", strlen("auto")) == 0) {
         *capture_if = (char*)ifl[0].name;
         *capture_mac = (char*)ifl[0].mac_addr;
@@ -878,7 +895,20 @@ static int find_interface (char **capture_if, char **capture_mac) {
 }
 
 #ifndef USE_AF_PACKET
-static int open_interface (char *capture_if) {
+#ifdef USE_NDP
+static int open_ndp_interface (char *capture_if) {
+    /* create the capture interface handle */
+	int res;
+
+    
+	ndp_reader_init(&handle_ndp);
+	res = ndp_reader_init_interface(&handle_ndp, capture_if);
+	if(res != 0) return -1;
+    return 0;
+}
+#endif
+
+static int open_pcap_interface(char *capture_if) {
     int linktype = 0;
     int status = 0;
     char errbuf[PCAP_ERRBUF_SIZE];
@@ -952,6 +982,15 @@ static int open_interface (char *capture_if) {
 
     return 0;
 }
+
+static int open_interface(char *capture_if) {
+#ifdef USE_NDP
+    return open_ndp_interface(capture_if);
+#else 
+    return open_pcap_interface(capture_if);
+#endif
+}
+
 #endif
 
 /**
@@ -1568,7 +1607,9 @@ int main (int argc, char **argv) {
         signal(SIGHUP, sig_reload);
 #endif
 
+
 #ifndef USE_AF_PACKET
+    #ifndef USE_NDP
         /* interface is already open, apply any filter expressions */
         if (filter_exp) {
 
@@ -1587,6 +1628,7 @@ int main (int argc, char **argv) {
             }
 
         }
+    #endif
 #endif
 
         /*
@@ -1642,7 +1684,7 @@ int main (int argc, char **argv) {
             }
         }
 #endif
-
+		
         while(1) {
 #ifndef USE_AF_PACKET
             uint64_t max_contexts = init_data.contexts;
@@ -1650,10 +1692,39 @@ int main (int argc, char **argv) {
                 /*
                  * Loop over packets captured from interface.
                  */
+                #ifdef USE_NDP
+				int ret;
+				struct ndp_packet *ndp_packet;
+				struct ndp_header *ndp_header;
+				ret = ndp_reader_get_pkt(&handle_ndp, &ndp_packet, &ndp_header);
+				if(ret > 0) {
+					struct pcap_pkthdr pcap_header = ndp_to_pcap_hdr(ndp_packet, ndp_header);
+					joy_get_packets((unsigned char*)max_contexts, &pcap_header, ndp_packet->data);
+				}
+                #else
                 pcap_dispatch(handle, NUM_PACKETS_IN_LOOP, joy_get_packets, (unsigned char*)max_contexts);
+                #endif
            } else {
                 joy_ctx_data *ctx = joy_index_to_context(0);
-                pcap_dispatch(handle, NUM_PACKETS_IN_LOOP, libpcap_process_packet, (unsigned char*)ctx);
+
+                #ifdef USE_NDP
+				    int ret;
+				    struct ndp_packet *ndp_packet;
+				    struct ndp_header *ndp_header;
+				    ret = ndp_reader_get_pkt(&handle_ndp, &ndp_packet, &ndp_header);
+				
+				    if(ret < 0) {
+				    	fprintf(info, "Ndp Error: %d, %s\n", ret, ndp_reader_error_msg(&handle_ndp));
+				    	break;
+				    }
+
+				    if(ret > 0) {
+				    	struct pcap_pkthdr pcap_header = ndp_to_pcap_hdr(ndp_packet, ndp_header);
+				    	libpcap_process_packet((unsigned char*)ctx, &pcap_header, ndp_packet->data);
+				    }
+                #else 
+                    pcap_dispatch(handle, NUM_PACKETS_IN_LOOP, libpcap_process_packet, (unsigned char*)ctx);
+                #endif
 
                 /* report executable info if configured */
                 if (glb_config->report_exe) {
@@ -1667,8 +1738,10 @@ int main (int argc, char **argv) {
 
                 /* Periodically report on progress */
                 if ((ctx->stats.num_packets) && ((ctx->stats.num_packets % NUM_PACKETS_BETWEEN_STATS_OUTPUT) == 0)) {
-                    joy_print_flocap_stats_output(ctx->ctx_id);
-                    print_libpcap_stats();
+                    #ifdef USE_NDP
+					    ndp_reader_print_stats(&handle_ndp);
+                    #else
+                    #endif
                 }
 
                 /* Print out expired flows */
@@ -1681,12 +1754,16 @@ int main (int argc, char **argv) {
            }
         }
 
-        if (filter_exp) {
-            pcap_freecode(&fp);
-        }
+        #ifdef USE_NDP
+		    ndp_reader_print_stats(&handle_ndp);
+		    ndp_reader_free(&handle_ndp);
+        #else
+            if (filter_exp) {
+                pcap_freecode(&fp);
+            }
 
-        pcap_close(handle);
-
+            pcap_close(handle);
+        #endif
     } else if (joy_mode == MODE_IPFIX_COLLECT_ONLINE) {
         joy_ctx_data *ctx = NULL;
 

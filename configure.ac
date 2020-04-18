@@ -260,6 +260,22 @@ fi
 AM_CONDITIONAL(BUILD_WITH_AF_PACKET, test "x$enable_af_packet" != "xno")
 
 
+#
+# User wants ndp
+#
+AC_MSG_CHECKING([enable ndp])
+AC_ARG_ENABLE(ndp,
+        [AS_HELP_STRING([--enable-ndp],[enable the use of ndp])],
+        [enable_ndp="yes"],
+        [enable_ndp="no"])  
+
+if test "x$enable_ndp" = "xyes"; then
+    AC_MSG_RESULT(yes)
+else
+    AC_MSG_RESULT(no)
+fi
+AM_CONDITIONAL(BUILD_WITH_NDP, test "x$enable_ndp" != "xno")
+
 
 AC_MSG_CHECKING([SafeC Stubs])
 SAFEC_STUB_DIR='$(abs_top_builddir)/safe_c_stub'
