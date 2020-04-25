@@ -52,6 +52,7 @@
 #endif
 
 #include <openssl/rand.h>
+#include <ipfix.h>
 #include "safe_lib.h"
 #include "ipfix.h"
 #include "pkt.h"
@@ -3326,7 +3327,7 @@ static unsigned interleave_ppi( const flow_record_t *fr_record,
     uint8_t pkt_flags;
     int16_t pkt_len;
 
-    if (fr_record->twin == NULL || fr_record->ppi->np == 0 || fr_record->twin->ppi->np == 0) {
+    if (fr_record->ppi == NULL || fr_record->twin == NULL || fr_record->twin->ppi == NULL || fr_record->ppi->np == 0 || fr_record->twin->ppi->np == 0) {
         return 0;
     }
 
