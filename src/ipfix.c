@@ -1969,6 +1969,11 @@ static uint16_t exporter_template_id = 256;
 #define ipfix_exp_template_ent_field_macro(a, b) \
   ((ipfix_exporter_template_field_t) {a, b, 9})
 
+#define ipfix_exp_template_cesnet_field_macro(a, b) \
+  ((ipfix_exporter_template_field_t) {a, b, 8057})
+
+#define ipfix_exp_template_flowmon_field_macro(a, b) \
+  ((ipfix_exporter_template_field_t) {a, b, 39499})
 
 /*
  * @brief Allocate heap memory for a sequence of fields.
@@ -2086,7 +2091,7 @@ static ipfix_exporter_data_t *ipfix_exp_data_record_malloc(void) {
  */
 static inline void ipfix_delete_exp_data_record(ipfix_exporter_data_t *data_record) {
     ipfix_template_type_e template_type = 0;
-    uint16_t variable_len = 0;
+    uint16_t variable_len = 0, tls_sni_len = 0;
 
     if (data_record == NULL) {
         loginfo("api-error: data record is null");
@@ -2105,11 +2110,15 @@ static inline void ipfix_delete_exp_data_record(ipfix_exporter_data_t *data_reco
         }
         break;
     case IPFIX_EXTENDED_TEMPLATE:
-        variable_len = data_record->record.extended_record.tls_record_lengths.length != 0;
+        variable_len = data_record->record.extended_record.tls_record_lengths.length;
+        tls_sni_len = data_record->record.extended_record.tls_sni.length;
         if (variable_len != 0) {
             free(data_record->record.extended_record.tls_record_lengths.content);
             free(data_record->record.extended_record.tls_record_times.content);
             free(data_record->record.extended_record.tls_record_types.content);
+        }
+        if (tls_sni_len != 0) {
+            free(data_record->record.extended_record.tls_sni.info);
         }
         break;
     case IPFIX_RESERVED_TEMPLATE:
@@ -3517,6 +3526,7 @@ static ipfix_exporter_data_t *ipfix_exp_create_extended_data_record
     uint16_t *tls_record_times = NULL, *packet_times = NULL;
     uint8_t *tls_record_types = NULL, *packet_flags = NULL;
     char * packet_directions = NULL;
+    uint16_t tls_sni_len = 0;
 
     data_record = ipfix_exp_data_record_malloc();
 
@@ -3557,6 +3567,29 @@ static ipfix_exporter_data_t *ipfix_exp_create_extended_data_record
         /*
          * Extended record
          */
+
+        /* TLS SNI */
+        if (fr_record->tls == NULL) {
+            tls_sni_len = 0;
+        } else {
+            tls_sni_len = fr_record->tls->sni_length;
+        }
+        data_record->record.extended_record.tls_sni.flag = 255;
+        data_record->record.extended_record.tls_sni.length = tls_sni_len;
+        /* Copy SNI into the record*/
+        if (tls_sni_len != 0) {
+            data_record->record.extended_record.tls_sni.info =
+                    calloc(tls_sni_len, sizeof(unsigned char));
+            if (!data_record->record.extended_record.tls_sni.info) {
+                loginfo("error: unable to malloc data record");
+                ipfix_delete_exp_data_record(data_record);
+                return NULL;
+            }
+
+            memcpy_s(data_record->record.extended_record.tls_sni.info, tls_sni_len, fr_record->tls->sni,
+                     tls_sni_len);
+        }
+
         packet_count = interleave_ppi(fr_record, &packet_lengths, &packet_times, &packet_flags, &packet_directions);
 
         /* IPFIX_PACKET_LENGTHS */
@@ -3630,7 +3663,8 @@ static ipfix_exporter_data_t *ipfix_exp_create_extended_data_record
 
         data_record->length = SIZE_IPFIX_DATA_EXTENDED +
                 tls_record_count * (sizeof(int16_t) + sizeof(uint16_t) + sizeof(uint8_t)) +
-                packet_count * (sizeof(int16_t) + sizeof(uint16_t) + sizeof(uint8_t) + sizeof(char));
+                packet_count * (sizeof(int16_t) + sizeof(uint16_t) + sizeof(uint8_t) + sizeof(char)) +
+                tls_sni_len;
         data_record->type = IPFIX_EXTENDED_TEMPLATE;
 
     } else {
@@ -3829,7 +3863,7 @@ static ipfix_exporter_template_t *ipfix_exp_create_idp_template(void) {
  */
 static ipfix_exporter_template_t *ipfix_exp_create_extended_template(void) {
     ipfix_exporter_template_t *template = NULL;
-    uint16_t num_fields = 14;
+    uint16_t num_fields = 15;
 
     template = ipfix_exp_template_malloc(num_fields);
 
@@ -3858,8 +3892,8 @@ static ipfix_exporter_template_t *ipfix_exp_create_extended_template(void) {
         ipfix_exp_template_add_field(template,
                                      ipfix_exp_template_field_macro(IPFIX_FLOW_END_MICROSECONDS, 8));
 
-        ipfix_exp_template_add_field(template,
-                                         ipfix_exp_template_field_macro(IPFIX_BASIC_LIST, 65535));
+        ipfix_exp_template_add_ent_field(template,
+                                     ipfix_exp_template_flowmon_field_macro(IPFIX_TLS_SNI, 65535));
 
         ipfix_exp_template_add_field(template,
                                          ipfix_exp_template_field_macro(IPFIX_BASIC_LIST, 65535));
@@ -3867,7 +3901,10 @@ static ipfix_exporter_template_t *ipfix_exp_create_extended_template(void) {
         ipfix_exp_template_add_field(template,
                                          ipfix_exp_template_field_macro(IPFIX_BASIC_LIST, 65535));
 
-         ipfix_exp_template_add_field(template,
+        ipfix_exp_template_add_field(template,
+                                         ipfix_exp_template_field_macro(IPFIX_BASIC_LIST, 65535));
+
+        ipfix_exp_template_add_field(template,
                                          ipfix_exp_template_field_macro(IPFIX_BASIC_LIST, 65535));
 
         ipfix_exp_template_add_field(template,
@@ -4289,6 +4326,7 @@ static int ipfix_exp_encode_data_record_extended(ipfix_exporter_data_t *data_rec
     uint16_t bigend_dest_port = 0;
     uint64_t bigend_end_time = 0;
     uint64_t bigend_start_time = 0;
+    uint16_t bigend_variable_length = 0;
 
     if (data_record == NULL) {
         loginfo("api-error: data_record is null");
@@ -4338,6 +4376,20 @@ static int ipfix_exp_encode_data_record_extended(ipfix_exporter_data_t *data_rec
     /*
      * Encode extended record
      */
+
+    /* Encode TLS SNI */
+    memcpy_s(ptr,  sizeof(uint8_t), &data_record->record.extended_record.tls_sni.flag, sizeof(uint8_t));
+    ptr += sizeof(uint8_t);
+
+    /* Encode the variable length */
+    bigend_variable_length = htons(data_record->record.extended_record.tls_sni.length);
+    memcpy_s(ptr, sizeof(uint16_t), &bigend_variable_length, sizeof(uint16_t));
+    ptr += sizeof(uint16_t);
+
+    /* Copy the SNI */
+    memcpy_s(ptr, data_record->record.extended_record.tls_sni.length, data_record->record.extended_record.tls_sni.info,
+             data_record->record.extended_record.tls_sni.length);
+    ptr += data_record->record.extended_record.tls_sni.length;
 
     /* IPFIX_PACKET_LENGTHS */
     if (encode_basic_list(ptr, &data_record->record.extended_record.packet_lengths)) {

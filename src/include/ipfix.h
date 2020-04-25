@@ -419,8 +419,8 @@ typedef struct ipfix_exporter_data_idp_ {
 } ipfix_exporter_data_idp_t;
 
 
-// 12 * 7 for six basic lists
-#define SIZE_IPFIX_DATA_EXTENDED 84 + SIZE_IPFIX_DATA_SIMPLE
+// 12 * 7 for basic lists + 3 for sni
+#define SIZE_IPFIX_DATA_EXTENDED 87 + SIZE_IPFIX_DATA_SIMPLE
 
 typedef struct ipfix_exporter_data_extended_ {
     uint32_t source_ipv4_address;
@@ -430,6 +430,7 @@ typedef struct ipfix_exporter_data_extended_ {
     uint8_t protocol_identifier;
     uint64_t flow_start_microseconds;
     uint64_t flow_end_microseconds;
+    ipfix_variable_field_t tls_sni;
     ipfix_basic_list_field_t packet_lengths;
     ipfix_basic_list_field_t packet_directions;
     ipfix_basic_list_field_t packet_times;
@@ -656,7 +657,8 @@ enum ipfix_entities {
   IPFIX_PACKET_LENGTHS =                            44962,
   IPFIX_PACKET_TIMES =                              44963,
   IPFIX_PACKET_FLAGS =                              44964,
-  IPFIX_PACKET_DIRECTIONS =                         44965
+  IPFIX_PACKET_DIRECTIONS =                         44965,
+  IPFIX_TLS_SNI =                                   33106, /* 32768 + 338*/
 };
 
 
