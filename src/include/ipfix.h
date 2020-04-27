@@ -602,6 +602,8 @@ enum ipfix_set_type {
   IPFIX_OPTION_SET =                                3,
 };
 
+#define CESNET_PEN 8057
+#define FLOWMON_PEN 39499
 
 /*
  * @brief Enumeration representing IPFIX field entities.
@@ -654,11 +656,15 @@ enum ipfix_entities {
   IPFIX_TLS_HANDSHAKE_TYPES =                       44959,
   IPFIX_TLS_EXTENSION_LENGTHS =                     44960,
   IPFIX_TLS_EXTENSION_TYPES =                       44961,
-  IPFIX_PACKET_LENGTHS =                            44962,
-  IPFIX_PACKET_TIMES =                              44963,
-  IPFIX_PACKET_FLAGS =                              44964,
-  IPFIX_PACKET_DIRECTIONS =                         44965,
-  IPFIX_TLS_SNI =                                   33106, /* 32768 + 338*/
+  /* CESNET PPI elements*/
+  IPFIX_PPI_TLS_REC_LENGTHS =                       33778, /* 32768 + 1010*/
+  IPFIX_PPI_TLS_REC_TIMES =                         33779,
+  IPFIX_PPI_TLS_CONTENT_TYPES =                     33780,
+  IPFIX_PPI_PKT_LENGTHS =                           33781,
+  IPFIX_PPI_PKT_TIMES =                             33782,
+  IPFIX_PPI_PKT_FLAGS =                             33783,
+  IPFIX_PPI_PKT_DIRECTIONS =                        33784,
+  IPFIX_TLS_SNI =                                   33106, /* 32768 + flowmon element tls_sni 338*/
 };
 
 

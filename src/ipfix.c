@@ -1970,10 +1970,10 @@ static uint16_t exporter_template_id = 256;
   ((ipfix_exporter_template_field_t) {a, b, 9})
 
 #define ipfix_exp_template_cesnet_field_macro(a, b) \
-  ((ipfix_exporter_template_field_t) {a, b, 8057})
+  ((ipfix_exporter_template_field_t) {a, b, CESNET_PEN})
 
 #define ipfix_exp_template_flowmon_field_macro(a, b) \
-  ((ipfix_exporter_template_field_t) {a, b, 39499})
+  ((ipfix_exporter_template_field_t) {a, b, FLOWMON_PEN})
 
 /*
  * @brief Allocate heap memory for a sequence of fields.
@@ -3592,39 +3592,39 @@ static ipfix_exporter_data_t *ipfix_exp_create_extended_data_record
 
         packet_count = interleave_ppi(fr_record, &packet_lengths, &packet_times, &packet_flags, &packet_directions);
 
-        /* IPFIX_PACKET_LENGTHS */
+        /* IPFIX_PPI_PKT_LENGTHS */
         data_record->record.extended_record.packet_lengths.flag = 255;
         data_record->record.extended_record.packet_lengths.length = BASIC_LIST_HEADER_SIZE + packet_count * sizeof(int16_t);
-        data_record->record.extended_record.packet_lengths.header.field_id = IPFIX_PACKET_LENGTHS;
+        data_record->record.extended_record.packet_lengths.header.field_id = IPFIX_PPI_PKT_LENGTHS;
         data_record->record.extended_record.packet_lengths.header.element_length = sizeof(int16_t);
-        data_record->record.extended_record.packet_lengths.header.enterprise_num = 9; // CISCO
+        data_record->record.extended_record.packet_lengths.header.enterprise_num = CESNET_PEN;
         data_record->record.extended_record.packet_lengths.header.semantic = 3; // ALL OF
         data_record->record.extended_record.packet_lengths.content = (unsigned char *) packet_lengths;
 
-        /* IPFIX_PACKET_DIRECTIONS*/
+        /* IPFIX_PPI_PKT_DIRECTIONS*/
         data_record->record.extended_record.packet_directions.flag = 255;
         data_record->record.extended_record.packet_directions.length = BASIC_LIST_HEADER_SIZE + packet_count * sizeof(uint8_t);
-        data_record->record.extended_record.packet_directions.header.field_id = IPFIX_PACKET_DIRECTIONS;
+        data_record->record.extended_record.packet_directions.header.field_id = IPFIX_PPI_PKT_DIRECTIONS;
         data_record->record.extended_record.packet_directions.header.element_length = sizeof(char);
-        data_record->record.extended_record.packet_directions.header.enterprise_num = 9;
+        data_record->record.extended_record.packet_directions.header.enterprise_num = CESNET_PEN;
         data_record->record.extended_record.packet_directions.header.semantic = 3;
         data_record->record.extended_record.packet_directions.content = (unsigned char *) packet_directions;
 
-        /* IPFIX_PACKET_TIMES */
+        /* IPFIX_PPI_PKT_TIMES */
         data_record->record.extended_record.packet_times.flag = 255;
         data_record->record.extended_record.packet_times.length = BASIC_LIST_HEADER_SIZE + packet_count * sizeof(uint16_t);
-        data_record->record.extended_record.packet_times.header.field_id = IPFIX_PACKET_TIMES;
+        data_record->record.extended_record.packet_times.header.field_id = IPFIX_PPI_PKT_TIMES;
         data_record->record.extended_record.packet_times.header.element_length = sizeof(uint16_t);
-        data_record->record.extended_record.packet_times.header.enterprise_num = 9;
+        data_record->record.extended_record.packet_times.header.enterprise_num = CESNET_PEN;
         data_record->record.extended_record.packet_times.header.semantic = 3;
         data_record->record.extended_record.packet_times.content = (unsigned char *) packet_times;
 
-        /* IPFIX_PACKET_FLAGS */
+        /* IPFIX_PPI_PKT_FLAGS */
         data_record->record.extended_record.packet_flags.flag = 255;
         data_record->record.extended_record.packet_flags.length = BASIC_LIST_HEADER_SIZE + packet_count * sizeof(uint8_t);
-        data_record->record.extended_record.packet_flags.header.field_id = IPFIX_PACKET_FLAGS;
+        data_record->record.extended_record.packet_flags.header.field_id = IPFIX_PPI_PKT_FLAGS;
         data_record->record.extended_record.packet_flags.header.element_length = sizeof(uint8_t);
-        data_record->record.extended_record.packet_flags.header.enterprise_num = 9;
+        data_record->record.extended_record.packet_flags.header.enterprise_num = CESNET_PEN;
         data_record->record.extended_record.packet_flags.header.semantic = 3;
         data_record->record.extended_record.packet_flags.content = packet_flags;
 
@@ -3633,30 +3633,30 @@ static ipfix_exporter_data_t *ipfix_exp_create_extended_data_record
          */
         tls_record_count = interleave_tls(fr_record, &tls_record_lengths, &tls_record_times, &tls_record_types);
 
-        /* IPFIX_TLS_RECORD_LENGTHS */
+        /* IPFIX_PPI_TLS_REC_LENGTHS */
         data_record->record.extended_record.tls_record_lengths.flag = 255;
         data_record->record.extended_record.tls_record_lengths.length = BASIC_LIST_HEADER_SIZE + tls_record_count * sizeof(int16_t);
-        data_record->record.extended_record.tls_record_lengths.header.field_id = IPFIX_TLS_RECORD_LENGTHS;
+        data_record->record.extended_record.tls_record_lengths.header.field_id = IPFIX_PPI_TLS_REC_LENGTHS;
         data_record->record.extended_record.tls_record_lengths.header.element_length = sizeof(int16_t);
-        data_record->record.extended_record.tls_record_lengths.header.enterprise_num = 9; // CISCO
+        data_record->record.extended_record.tls_record_lengths.header.enterprise_num = CESNET_PEN;
         data_record->record.extended_record.tls_record_lengths.header.semantic = 3; // ALL OF
         data_record->record.extended_record.tls_record_lengths.content = (unsigned char *) tls_record_lengths;
 
-        /* IPFIX_TLS_RECORD_TIMES */
+        /* IPFIX_PPI_TLS_REC_TIMES */
         data_record->record.extended_record.tls_record_times.flag = 255;
         data_record->record.extended_record.tls_record_times.length = BASIC_LIST_HEADER_SIZE + tls_record_count * sizeof(uint16_t);
-        data_record->record.extended_record.tls_record_times.header.field_id = IPFIX_TLS_RECORD_TIMES;
+        data_record->record.extended_record.tls_record_times.header.field_id = IPFIX_PPI_TLS_REC_TIMES;
         data_record->record.extended_record.tls_record_times.header.element_length = sizeof(uint16_t);
-        data_record->record.extended_record.tls_record_times.header.enterprise_num = 9;
+        data_record->record.extended_record.tls_record_times.header.enterprise_num = CESNET_PEN;
         data_record->record.extended_record.tls_record_times.header.semantic = 3;
         data_record->record.extended_record.tls_record_times.content = (unsigned char *) tls_record_times;
 
-        /* IPFIX_TLS_CONTENT_TYPES */
+        /* IPFIX_PPI_TLS_CONTENT_TYPES */
         data_record->record.extended_record.tls_record_types.flag = 255;
         data_record->record.extended_record.tls_record_types.length = BASIC_LIST_HEADER_SIZE + tls_record_count * sizeof(uint8_t);
-        data_record->record.extended_record.tls_record_types.header.field_id = IPFIX_TLS_CONTENT_TYPES;
+        data_record->record.extended_record.tls_record_types.header.field_id = IPFIX_PPI_TLS_CONTENT_TYPES;
         data_record->record.extended_record.tls_record_types.header.element_length = sizeof(uint8_t);
-        data_record->record.extended_record.tls_record_types.header.enterprise_num = 9;
+        data_record->record.extended_record.tls_record_types.header.enterprise_num = CESNET_PEN;
         data_record->record.extended_record.tls_record_types.header.semantic = 3;
         data_record->record.extended_record.tls_record_types.content = tls_record_types;
 
@@ -4391,43 +4391,43 @@ static int ipfix_exp_encode_data_record_extended(ipfix_exporter_data_t *data_rec
              data_record->record.extended_record.tls_sni.length);
     ptr += data_record->record.extended_record.tls_sni.length;
 
-    /* IPFIX_PACKET_LENGTHS */
+    /* IPFIX_PPI_PKT_LENGTHS */
     if (encode_basic_list(ptr, &data_record->record.extended_record.packet_lengths)) {
         return 1;
     }
     ptr += data_record->record.extended_record.packet_lengths.length + 3;
 
-    /* IPFIX_PACKET_DIRECTIONS */
+    /* IPFIX_PPI_PKT_DIRECTIONS */
     if (encode_basic_list(ptr, &data_record->record.extended_record.packet_directions)) {
         return 1;
     }
     ptr += data_record->record.extended_record.packet_directions.length + 3;
 
-    /* IPFIX_PACKET_TIMES */
+    /* IPFIX_PPI_PKT_TIMES */
     if (encode_basic_list(ptr, &data_record->record.extended_record.packet_times)) {
         return 1;
     }
     ptr += data_record->record.extended_record.packet_times.length + 3;
 
-    /* IPFIX_PACKET_FLAGS */
+    /* IPFIX_PPI_PKT_FLAGS */
     if (encode_basic_list(ptr, &data_record->record.extended_record.packet_flags)) {
         return 1;
     }
     ptr += data_record->record.extended_record.packet_flags.length + 3;
 
-    /* IPFIX_TLS_RECORD_LENGTHS */
+    /* IPFIX_PPI_TLS_REC_LENGTHS */
     if (encode_basic_list(ptr, &data_record->record.extended_record.tls_record_lengths)) {
         return 1;
     }
     ptr += data_record->record.extended_record.tls_record_lengths.length + 3;
 
-    /* IPFIX_TLS_RECORD_TIMES */
+    /* IPFIX_PPI_TLS_REC_TIMES */
     if (encode_basic_list(ptr, &data_record->record.extended_record.tls_record_times)) {
         return 1;
     }
     ptr += data_record->record.extended_record.tls_record_times.length + 3;
 
-    /* IPFIX_TLS_CONTENT_TYPES */
+    /* IPFIX_PPI_TLS_CONTENT_TYPES */
     if (encode_basic_list(ptr, &data_record->record.extended_record.tls_record_types)) {
         return 1;
     }
