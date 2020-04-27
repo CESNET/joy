@@ -13,6 +13,7 @@ bin/.libs/
 bin/Makefile
 bin/jfd-anon
 bin/joy
+bin/joy_static
 bin/joy-anon
 bin/joy_api_test
 bin/joy_api_test2
@@ -27,3 +28,6 @@ safe_c_stub/src/.dirstamp
 src/.deps/
 src/.dirstamp
 stamp-h1
+.idea/
+cmake-build-debug/
+CMakeLists.txt

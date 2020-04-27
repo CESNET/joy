@@ -277,6 +277,8 @@ typedef struct ipfix_basic_list_hdr_ {
 
 #else
 
+#define BASIC_LIST_HEADER_SIZE 9
+
 typedef struct __attribute__((__packed__)) ipfix_basic_list_hdr_ {
     uint8_t semantic;
     uint16_t field_id;
@@ -336,7 +338,8 @@ typedef struct ipfix_collector_ {
 typedef enum ipfix_template_type_ {
   IPFIX_RESERVED_TEMPLATE =                          0,
   IPFIX_SIMPLE_TEMPLATE =                            1,
-  IPFIX_IDP_TEMPLATE =                               2
+  IPFIX_IDP_TEMPLATE =                               2,
+  IPFIX_EXTENDED_TEMPLATE =                          3
 } ipfix_template_type_e;
 
 
@@ -374,6 +377,17 @@ typedef struct ipfix_variable_field_ {
     unsigned char *info;
 } ipfix_variable_field_t;
 
+
+#define MIN_SIZE_BASIC_LIST_FIELD 3 + BASIC_LIST_HEADER_SIZE
+
+typedef struct ipfix_basic_list_field_ {
+    uint8_t flag;
+    uint16_t length;
+    ipfix_basic_list_hdr_t header;
+    unsigned char *content;
+} ipfix_basic_list_field_t;
+
+
 #define SIZE_IPFIX_DATA_SIMPLE 29
 
 typedef struct ipfix_exporter_data_simple_ {
@@ -405,6 +419,28 @@ typedef struct ipfix_exporter_data_idp_ {
 } ipfix_exporter_data_idp_t;
 
 
+// 12 * 7 for basic lists + 3 for sni
+#define SIZE_IPFIX_DATA_EXTENDED 87 + SIZE_IPFIX_DATA_SIMPLE
+
+typedef struct ipfix_exporter_data_extended_ {
+    uint32_t source_ipv4_address;
+    uint32_t destination_ipv4_address;
+    uint16_t source_transport_port;
+    uint16_t destination_transport_port;
+    uint8_t protocol_identifier;
+    uint64_t flow_start_microseconds;
+    uint64_t flow_end_microseconds;
+    ipfix_variable_field_t tls_sni;
+    ipfix_basic_list_field_t packet_lengths;
+    ipfix_basic_list_field_t packet_directions;
+    ipfix_basic_list_field_t packet_times;
+    ipfix_basic_list_field_t packet_flags;
+    ipfix_basic_list_field_t tls_record_lengths;
+    ipfix_basic_list_field_t tls_record_times;
+    ipfix_basic_list_field_t tls_record_types;
+} ipfix_exporter_data_extended_t;
+
+
 /*
  * @brief Structure representing an IPFIX Exporter Data record.
  */
@@ -412,6 +448,7 @@ typedef struct ipfix_exporter_data_ {
   union {
     ipfix_exporter_data_simple_t simple;
     ipfix_exporter_data_idp_t idp_record;
+    ipfix_exporter_data_extended_t extended_record;
   } record;
   ipfix_template_type_e type;
   uint16_t length; /**< total length the data record */
@@ -510,7 +547,7 @@ typedef struct ipfix_exporter_ {
 #endif
 
 #if CPU_IS_BIG_ENDIAN
-# define bytes_to_u32(bytes) (bytes[0] << 24) + (bytes[1] << 16) + (bytes[2] << 8) + bytes[3] 
+# define bytes_to_u32(bytes) (bytes[0] << 24) + (bytes[1] << 16) + (bytes[2] << 8) + bytes[3]
 #else
 # define bytes_to_u32(bytes) bytes[0] + (bytes[1] << 8) + (bytes[2] << 16) + (bytes[3] << 24)
 #endif
@@ -565,6 +602,8 @@ enum ipfix_set_type {
   IPFIX_OPTION_SET =                                3,
 };
 
+#define CESNET_PEN 8057
+#define FLOWMON_PEN 39499
 
 /*
  * @brief Enumeration representing IPFIX field entities.
@@ -616,7 +655,16 @@ enum ipfix_entities {
   IPFIX_TLS_CONTENT_TYPES =                         44958,
   IPFIX_TLS_HANDSHAKE_TYPES =                       44959,
   IPFIX_TLS_EXTENSION_LENGTHS =                     44960,
-  IPFIX_TLS_EXTENSION_TYPES =                       44961
+  IPFIX_TLS_EXTENSION_TYPES =                       44961,
+  /* CESNET PPI elements*/
+  IPFIX_PPI_TLS_REC_LENGTHS =                       33778, /* 32768 + 1010*/
+  IPFIX_PPI_TLS_REC_TIMES =                         33779,
+  IPFIX_PPI_TLS_CONTENT_TYPES =                     33780,
+  IPFIX_PPI_PKT_LENGTHS =                           33781,
+  IPFIX_PPI_PKT_TIMES =                             33782,
+  IPFIX_PPI_PKT_FLAGS =                             33783,
+  IPFIX_PPI_PKT_DIRECTIONS =                        33784,
+  IPFIX_TLS_SNI =                                   33106, /* 32768 + flowmon element tls_sni 338*/
 };
 
 
